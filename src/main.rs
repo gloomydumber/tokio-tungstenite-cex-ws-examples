@@ -46,7 +46,7 @@ async fn main() {
 
         // Subscription message
         let subscription_message: serde_json::Value = json!([
-            { "ticket": Uuid::new_v4().to_string().as_str() },
+            { "ticket": Uuid::new_v4().to_string() },
             { "type": "ticker", "codes": ["KRW-BTC"] }
         ]);
 
