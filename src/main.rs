@@ -24,7 +24,7 @@ async fn main() {
     let ws_stream = loop {
         match connect_async(url).await {
             Ok((stream, _)) => {
-                print_warning("WebSocket Connection Established");
+                print_info("WebSocket Connection Established");
                 break stream;
             }
             Err(e) => {
