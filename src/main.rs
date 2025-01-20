@@ -4,107 +4,145 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, interval, Duration};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use uuid::Uuid;
+use tracing::{info, warn, error};
+use tracing_subscriber::{prelude::*, fmt, layer::SubscriberExt, EnvFilter};
 use chrono::DateTime;
 use chrono_tz::Asia::Seoul;
-use colored::Colorize;
+use uuid::Uuid;
 use bytes::Bytes;
+use colored::Colorize;
 
 #[tokio::main]
 async fn main() {
+    // Create a file writer for logging
+    let log_file = std::fs::File::create("app.log").expect("Failed to create log file");
+
+    // Terminal logging layer (general logs)
+    let terminal_layer = fmt::layer()
+        .with_writer(std::io::stdout) // Output logs to terminal
+        .with_ansi(true) // Enable colored output
+        .with_filter(EnvFilter::new("info"));
+
+    // File logging layer
+    let file_layer = fmt::layer()
+        .with_writer(move || log_file.try_clone().expect("Failed to clone log file"))
+        .with_filter(
+            EnvFilter::new("info")
+            .add_directive("terminal_only=off".parse().unwrap())
+    );
+
+    // Set up tracing-subscriber for both terminal and file logging
+    tracing_subscriber::registry()
+        .with(terminal_layer)
+        .with(file_layer)
+        .init();
+
+    // Main logic
+    let app_task = tokio::spawn(run_websocket());
+
+    // Wait for Ctrl+C to gracefully shut down
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for Ctrl+C");
+
+    // Graceful shutdown
+    info!("Shutting down...");
+    app_task.abort(); // Cancel the main task
+    info!("Logs flushed, exiting.");
+}
+
+async fn run_websocket() {
     loop {
-        // WebSocket URL for Upbit API
         let url = "wss://api.upbit.com/websocket/v1";
 
-        // Establish a WebSocket connection
         let ws_stream = match connect_async(url).await {
             Ok((stream, _)) => {
-                print_info("WebSocket Connection Established");
+                info!("WebSocket connection established");
                 stream
             }
             Err(e) => {
-                print_error("WebSocket Connection Failed, Retrying after 5 Seconds", Some(Box::new(e)));
+                error!("WebSocket connection failed: {:?}. Retrying in 5 seconds.", e);
                 sleep(Duration::from_secs(5)).await;
-                continue; // Retry connection
+                continue;
             }
         };
 
         let (mut write, mut read) = ws_stream.split();
-
-        // Create an unbounded channel for sending messages to the WebSocket writer
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
-        // Spawn a task to handle writing messages
         let writer_task = tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
                 if let Err(e) = write.send(message).await {
-                    print_error("Error Sending Message", Some(Box::new(e)));
+                    error!("Error sending message: {:?}", e);
                     break;
                 }
             }
         });
 
-        // Subscription message
         let subscription_message: serde_json::Value = json!([
             { "ticket": Uuid::new_v4().to_string() },
             { "type": "ticker", "codes": ["KRW-BTC"] }
         ]);
 
-        // Send the subscription message using the channel
         let message: Message = Message::Text(subscription_message.to_string().into());
         if tx.send(message).is_err() {
-            print_error("Failed to send subscription message", None);
+            error!("Failed to send subscription message");
             break;
         }
-        print_info("Subscription message sent");
+        info!("Subscription message sent");
 
-        // Spawn a task to send periodic ping frames
         let ping_tx = tx.clone();
         let ping_task = tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(30)); // Adjust interval as needed
+            let mut interval = interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 if ping_tx.send(Message::Ping(Bytes::from(vec![]))).is_err() {
-                    print_error("Failed to send ping frame", None);
+                    error!("Failed to send ping frame");
                     break;
                 }
-                println!("{}", "Ping frame sent".yellow());
+                info!("Ping frame sent");
             }
         });
 
-        // Read messages from the WebSocket
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Pong(bin)) => {
                     if bin.is_empty() {
-                        println!("{}", "Received empty PONG".bright_yellow().bold());
+                        warn!("Received empty PONG");
                     } else if let Ok(text) = String::from_utf8(bin.to_vec()) {
-                        println!(
-                            "{}: {}",
-                            "Received PONG (as text)".bright_yellow().bold(),
-                            text
-                        );
+                        info!("Received PONG (as text): {}", text);
                     } else {
-                        println!(
-                            "{}: {:?}",
-                            "Received PONG (binary data)".bright_yellow().bold(),
-                            bin
-                        );
+                        warn!("Received PONG (binary data): {:?}", bin);
                     }
                 }
                 Ok(Message::Text(text)) => {
-                    println!("{}: {}", "Received".green().bold(), text);
+                    info!("Received: {}", text);
                 }
                 Ok(Message::Binary(bin)) => {
                     if let Ok(text) = String::from_utf8(bin.to_vec()) {
                         if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
                             let trade_price = parsed.get("trade_price");
-                            let trade_timestamp = parsed.get("trade_timestamp").unwrap().as_i64().unwrap();
-                            let readable_timestamp = DateTime::from_timestamp_millis(trade_timestamp).unwrap();
+                            let trade_timestamp = parsed
+                                .get("trade_timestamp")
+                                .unwrap()
+                                .as_i64()
+                                .unwrap();
+                            let readable_timestamp =
+                                DateTime::from_timestamp_millis(trade_timestamp).unwrap();
                             let kst_timestamp = readable_timestamp.with_timezone(&Seoul);
 
                             if let Some(price) = trade_price {
-                                println!(
+                                // tracing::event!(
+                                //     target: "terminal_only",
+                                //     tracing::Level::INFO,
+                                //     "{}: {}, {}: {}",
+                                //     "Trade Price".green().bold(),
+                                //     price,
+                                //     "Trade Timestamp".cyan().bold(),
+                                //     kst_timestamp
+                                // );
+                                info!(
+                                    target: "terminal_only",
                                     "{}: {}, {}: {}",
                                     "Trade Price".green().bold(),
                                     price,
@@ -112,56 +150,32 @@ async fn main() {
                                     kst_timestamp
                                 );
                             } else {
-                                print_error("Missing keys 'trade_price' or 'trade_timestamp'", None);
+                                error!("Missing keys 'trade_price' or 'trade_timestamp'");
                             }
                         } else {
-                            print_error("Failed to parse JSON, Original Text:", None);
-                            println!("{}", text);
+                            error!("Failed to parse JSON, Original Text: {}", text);
                         }
                     } else {
-                        print_error("Received non-UTF8 Binary Data, Binary Data:", None);
-                        println!("{:?}", bin);
+                        error!("Received non-UTF8 Binary Data: {:?}", bin);
                     }
                 }
                 Ok(Message::Close(reason)) => {
-                    print_warning("Connection Closed, Reason:");
-                    println!("{:?}", reason);
-                    break; // Exit the reading loop to reconnect
+                    warn!("Connection closed, reason: {:?}", reason);
+                    break;
                 }
                 Ok(_) => {
-                    print_warning("Received unexpected WebSocket message");
+                    warn!("Received unexpected WebSocket message");
                 }
                 Err(e) => {
-                    print_error("Unknown WebSocket Error", Some(Box::new(e)));
-                    break; // Exit the reading loop to reconnect
+                    error!("Unknown WebSocket error: {:?}", e);
+                    break;
                 }
             }
         }
 
-        // Cleanup tasks and retry connection
         writer_task.abort();
         ping_task.abort();
-
-        print_warning("Reconnecting to WebSocket in 5 seconds...");
+        warn!("Reconnecting to WebSocket in 5 seconds...");
         sleep(Duration::from_secs(5)).await;
-    }
-}
-
-fn print_info(msg: &str) {
-    println!("{}", msg.blue());
-}
-
-fn print_warning(msg: &str) {
-    println!("{}", msg.yellow());
-}
-
-fn print_error(msg: &str, error: Option<Box<dyn std::error::Error>>) {
-    match error {
-        Some(err) => {
-            println!("{}: {}", msg, err);
-        },
-        None => {
-            println!("{}", msg);
-        }
     }
 }
