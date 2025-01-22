@@ -5,7 +5,7 @@ use tokio::time::{sleep, interval, Duration};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tracing::{info, warn, error};
-use tracing_subscriber::{prelude::*, fmt, layer::SubscriberExt, EnvFilter};
+use tracing_subscriber::{fmt, Layer, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use chrono::DateTime;
 use chrono_tz::Asia::Seoul;
 use uuid::Uuid;
@@ -20,16 +20,17 @@ async fn main() {
     // Terminal logging layer (general logs)
     let terminal_layer = fmt::layer()
         .with_writer(std::io::stdout) // Output logs to terminal
-        .with_ansi(true) // Enable colored output
+        .with_ansi(true)
         .with_filter(EnvFilter::new("info"));
 
     // File logging layer
     let file_layer = fmt::layer()
         .with_writer(move || log_file.try_clone().expect("Failed to clone log file"))
+        .with_ansi(true)
         .with_filter(
             EnvFilter::new("info")
             .add_directive("terminal_only=off".parse().unwrap())
-    );
+        );
 
     // Set up tracing-subscriber for both terminal and file logging
     tracing_subscriber::registry()
@@ -46,9 +47,9 @@ async fn main() {
         .expect("Failed to listen for Ctrl+C");
 
     // Graceful shutdown
-    info!("Shutting down...");
+    info!("{}", "Shutting down...".yellow());
     app_task.abort(); // Cancel the main task
-    info!("Logs flushed, exiting.");
+    info!("{}", "Logs flushed, exiting.".yellow());
 }
 
 async fn run_websocket() {
@@ -57,7 +58,7 @@ async fn run_websocket() {
 
         let ws_stream = match connect_async(url).await {
             Ok((stream, _)) => {
-                info!("WebSocket connection established");
+                info!("{}", "WebSocket connection established".blue().bold());
                 stream
             }
             Err(e) => {
@@ -89,7 +90,7 @@ async fn run_websocket() {
             error!("Failed to send subscription message");
             break;
         }
-        info!("Subscription message sent");
+        info!("{}", "Subscription message sent".blue());
 
         let ping_tx = tx.clone();
         let ping_task = tokio::spawn(async move {
@@ -100,7 +101,7 @@ async fn run_websocket() {
                     error!("Failed to send ping frame");
                     break;
                 }
-                info!("Ping frame sent");
+                info!("{}", "Ping frame sent".yellow().bold());
             }
         });
 
@@ -108,7 +109,7 @@ async fn run_websocket() {
             match msg {
                 Ok(Message::Pong(bin)) => {
                     if bin.is_empty() {
-                        warn!("Received empty PONG");
+                        warn!("{}", "Received empty PONG".yellow().bold());
                     } else if let Ok(text) = String::from_utf8(bin.to_vec()) {
                         info!("Received PONG (as text): {}", text);
                     } else {
