@@ -92,6 +92,8 @@ async fn run_websocket() {
         }
         info!("{}", "Subscription message sent".blue());
 
+        // TODO: Handle the case where no response is received after sending a ping frame for N seconds. This may indicate a disconnection from the server.
+        // 2025-01-23T03:05:56.036323Z ERROR tokio_tungstenite_cex_ws_examples: Unknown WebSocket error: Io(Os { code: 10054, kind: ConnectionReset, message: "현재 연결은 원격 호스트에 의해 강제로 끊겼습니다." })
         let ping_tx = tx.clone();
         let ping_task = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(30));
